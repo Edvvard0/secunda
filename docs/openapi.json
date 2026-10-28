@@ -1,0 +1,613 @@
+{
+  "components": {
+    "schemas": {
+      "CreatePaymentRequest": {
+        "additionalProperties": false,
+        "description": "Body of ``POST /api/v1/payments``.",
+        "examples": [
+          {
+            "amount": "100.50",
+            "currency": "RUB",
+            "description": "Order #42",
+            "metadata": {
+              "order_id": 42
+            },
+            "webhook_url": "https://client.example.com/hooks/payments"
+          }
+        ],
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^[0-9]{1,16}(\\.[0-9]{1,2})?$",
+                "type": "string"
+              }
+            ],
+            "description": "Positive amount with at most two decimal places and at most 18 digits in total. Send it as a string; a JSON number is accepted only up to 15 significant digits.",
+            "examples": [
+              "100.50"
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "$ref": "#/components/schemas/Currency",
+            "description": "ISO 4217 code of the currency.",
+            "examples": [
+              "RUB"
+            ]
+          },
+          "description": {
+            "description": "Human readable purpose of the payment (1-1000 characters, not blank).",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "description": "Free-form JSON object kept with the payment. At most 4096 bytes as compact UTF-8 JSON and at most 5 levels of nesting.",
+            "title": "Metadata",
+            "type": "object"
+          },
+          "webhook_url": {
+            "description": "Where the result is delivered with a signed POST. Must be an http(s) URL with a host and without credentials; private and loopback targets are rejected unless explicitly allowed.",
+            "examples": [
+              "https://client.example.com/hooks/payments"
+            ],
+            "maxLength": 2048,
+            "title": "Webhook Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount",
+          "currency",
+          "description",
+          "webhook_url"
+        ],
+        "title": "CreatePaymentRequest",
+        "type": "object"
+      },
+      "Currency": {
+        "description": "Supported payment currencies (ISO 4217 codes).",
+        "enum": [
+          "RUB",
+          "USD",
+          "EUR"
+        ],
+        "title": "Currency",
+        "type": "string"
+      },
+      "HealthResponse": {
+        "description": "Body of the health probes.",
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "PaymentAcceptedResponse": {
+        "description": "Body of the ``202 Accepted`` answer: the payment exists and will be processed asynchronously.",
+        "examples": [
+          {
+            "created_at": "2026-01-15T10:30:00Z",
+            "payment_id": "0b5f3d0e-6a77-4c41-9a43-2f9e1c8f7a10",
+            "status": "pending"
+          }
+        ],
+        "properties": {
+          "created_at": {
+            "description": "Creation time (UTC).",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "payment_id": {
+            "description": "Identifier of the payment.",
+            "format": "uuid",
+            "title": "Payment Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus",
+            "description": "Current status; ``pending`` right after creation."
+          }
+        },
+        "required": [
+          "payment_id",
+          "status",
+          "created_at"
+        ],
+        "title": "PaymentAcceptedResponse",
+        "type": "object"
+      },
+      "PaymentResponse": {
+        "description": "Body of ``GET /api/v1/payments/{payment_id}``.",
+        "examples": [
+          {
+            "amount": "100.50",
+            "created_at": "2026-01-15T10:30:00Z",
+            "currency": "RUB",
+            "description": "Order #42",
+            "metadata": {
+              "order_id": 42
+            },
+            "payment_id": "0b5f3d0e-6a77-4c41-9a43-2f9e1c8f7a10",
+            "processed_at": "2026-01-15T10:30:04Z",
+            "status": "succeeded",
+            "webhook_url": "https://client.example.com/hooks/payments"
+          }
+        ],
+        "properties": {
+          "amount": {
+            "description": "Amount with exactly two decimals, serialised as a string.",
+            "title": "Amount",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Creation time (UTC).",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "$ref": "#/components/schemas/Currency",
+            "description": "ISO 4217 code of the currency."
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "payment_id": {
+            "description": "Identifier of the payment.",
+            "format": "uuid",
+            "title": "Payment Id",
+            "type": "string"
+          },
+          "processed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the final status was set; null while pending.",
+            "title": "Processed At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus",
+            "description": "``pending``, ``succeeded`` or ``failed``."
+          },
+          "webhook_url": {
+            "title": "Webhook Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "payment_id",
+          "amount",
+          "currency",
+          "description",
+          "metadata",
+          "status",
+          "webhook_url",
+          "created_at",
+          "processed_at"
+        ],
+        "title": "PaymentResponse",
+        "type": "object"
+      },
+      "PaymentStatus": {
+        "description": "Lifecycle of a payment: ``pending`` -> ``succeeded`` | ``failed`` (both final).",
+        "enum": [
+          "pending",
+          "succeeded",
+          "failed"
+        ],
+        "title": "PaymentStatus",
+        "type": "string"
+      },
+      "ProblemDetails": {
+        "description": "RFC 9457 problem document returned for every error (``application/problem+json``).",
+        "examples": [
+          {
+            "code": "payment-not-found",
+            "detail": "Payment not found",
+            "request_id": "3f2b8c1d4e5f4a6b9c0d1e2f3a4b5c6d",
+            "status": 404,
+            "title": "Payment not found",
+            "type": "https://payment-service/errors/payment-not-found"
+          }
+        ],
+        "properties": {
+          "code": {
+            "description": "Stable machine readable error code (kebab-case).",
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "description": "Explanation specific to this occurrence.",
+            "title": "Detail",
+            "type": "string"
+          },
+          "errors": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ValidationIssue"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-field problems; present only for ``validation-error``.",
+            "title": "Errors"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Value of the X-Request-ID response header.",
+            "title": "Request Id"
+          },
+          "status": {
+            "description": "HTTP status code.",
+            "title": "Status",
+            "type": "integer"
+          },
+          "title": {
+            "description": "Short summary, the same for every occurrence of the type.",
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "description": "URI identifying the problem type.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
+        "title": "ProblemDetails",
+        "type": "object"
+      },
+      "ValidationIssue": {
+        "description": "One problem found in the request.",
+        "properties": {
+          "loc": {
+            "description": "Path to the offending part of the request.",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Loc",
+            "type": "array"
+          },
+          "msg": {
+            "description": "Human readable explanation; never contains the submitted value.",
+            "title": "Msg",
+            "type": "string"
+          },
+          "type": {
+            "description": "Machine readable error type.",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationIssue",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "ApiKey": {
+        "description": "Static API key issued to the client.",
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "Asynchronous payment processing service.\n\n* `POST /api/v1/payments` accepts a payment and answers `202` right away; the result is delivered to the\n  client's `webhook_url` as a signed POST, at least once.\n* Every request may carry an `X-Request-ID` (`[A-Za-z0-9._-]`, up to 64 characters); the id actually used is\n  returned in the `X-Request-ID` response header and in the `request_id` field of every error.\n* Errors are `application/problem+json` documents (RFC 9457).\n",
+    "title": "Payment Service API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/payments": {
+      "post": {
+        "description": "Accepts a payment for asynchronous processing and answers immediately with `202 Accepted`; the final status is delivered to `webhook_url` and can be polled with `GET /payments/{payment_id}`.\n\nThe `Idempotency-Key` header makes the call safe to retry: repeating the request with the same key and the same body returns the original payment with `Idempotent-Replayed: true`, while the same key with a different body is rejected with `422` (`idempotency-key-reused`).",
+        "operationId": "createPayment",
+        "parameters": [
+          {
+            "description": "Required. Client generated unique key of this operation: 1-255 printable ASCII characters without spaces. A missing or invalid key is rejected with 400.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Required. Client generated unique key of this operation: 1-255 printable ASCII characters without spaces. A missing or invalid key is rejected with 400.",
+              "examples": [
+                "8d1f3c52-6b0e-4d54-9f55-0a1b2c3d4e5f"
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePaymentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentAcceptedResponse"
+                }
+              }
+            },
+            "description": "The payment was accepted (or an earlier identical request is being replayed).",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "`true` when the response replays an earlier request with the same key.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              },
+              "Location": {
+                "description": "URL of the created payment.",
+                "schema": {
+                  "examples": [
+                    "/api/v1/payments/0b5f3d0e-6a77-4c41-9a43-2f9e1c8f7a10"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The Idempotency-Key header is missing, blank or invalid."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The X-API-Key header is missing or wrong."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request body is larger than the configured limit (`API_MAX_BODY_BYTES`)."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The request was rejected (see `code`)."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          }
+        ],
+        "summary": "Create a payment",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/api/v1/payments/{payment_id}": {
+      "get": {
+        "description": "Returns the payment with its current status. `processed_at` is null while it is pending.",
+        "operationId": "getPayment",
+        "parameters": [
+          {
+            "description": "Identifier returned when the payment was created.",
+            "in": "path",
+            "name": "payment_id",
+            "required": true,
+            "schema": {
+              "description": "Identifier returned when the payment was created.",
+              "format": "uuid",
+              "title": "Payment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentResponse"
+                }
+              }
+            },
+            "description": "The payment."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The X-API-Key header is missing or wrong."
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "There is no payment with this id."
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "`payment_id` is not a valid UUID."
+          }
+        },
+        "security": [
+          {
+            "ApiKey": []
+          }
+        ],
+        "summary": "Get a payment",
+        "tags": [
+          "payments"
+        ]
+      }
+    },
+    "/health/live": {
+      "get": {
+        "description": "Returns 200 while the process is able to serve requests. Does not touch dependencies.",
+        "operationId": "getLiveness",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness probe",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "description": "Returns 200 when the database answers; 503 otherwise, so traffic is routed elsewhere.",
+        "operationId": "getReadiness",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "The database is unreachable."
+          }
+        },
+        "summary": "Readiness probe",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "description": "Create payments and read their status. Requires `X-API-Key`.",
+      "name": "payments"
+    },
+    {
+      "description": "Liveness and readiness probes. No authentication.",
+      "name": "health"
+    }
+  ]
+}
