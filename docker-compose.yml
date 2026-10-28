@@ -1,0 +1,190 @@
+# Local / demo stack of payment-service.
+#
+#   cp .env.example .env        # once; the stack refuses to start without it (see ${VAR:?...} below)
+#   docker compose up --build   # postgres, rabbitmq, migrate (one-shot), api, relay, consumer
+#   docker compose --profile demo up --build   # + webhook-sink, a receiver for demo webhooks
+#
+# One image (payment-service:local) runs every application process; only the command differs.
+# Start-up order:  postgres (healthy) -> migrate (exits 0) -> api / relay / consumer.
+# The API does not depend on RabbitMQ: it only writes to PostgreSQL (outbox), so accepting payments keeps
+# working while the broker is down - events wait in the outbox until the relay can publish them.
+
+name: payment-service
+
+# ---------------------------------------------------------------------------
+# Shared fragments
+# ---------------------------------------------------------------------------
+
+# Rotate container logs so that a long-running demo cannot fill the disk.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Settings that differ from the application defaults because of the compose network.
+# DB_URL / RABBIT_URL are built here (not in .env) from the credentials of the infrastructure containers,
+# so the credentials are defined exactly once. `${VAR:?message}` aborts `docker compose` with the message
+# when the variable is missing, instead of silently starting with empty credentials.
+x-app-environment: &app-environment
+  DB_URL: "postgresql+asyncpg://${POSTGRES_USER:?POSTGRES_USER is not set - copy .env.example to .env}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set - copy .env.example to .env}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is not set - copy .env.example to .env}"
+  RABBIT_URL: "amqp://${RABBITMQ_DEFAULT_USER:?RABBITMQ_DEFAULT_USER is not set - copy .env.example to .env}:${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is not set - copy .env.example to .env}@rabbitmq:5672/"
+  API_KEY: "${API_KEY:?API_KEY is not set - copy .env.example to .env}"
+  WEBHOOK_SIGNING_SECRET: "${WEBHOOK_SIGNING_SECRET:?WEBHOOK_SIGNING_SECRET is not set - copy .env.example to .env}"
+
+# Hardened defaults shared by every application container.
+x-app: &app
+  build: .
+  image: payment-service:local
+  # Tunables (RETRY_*, OUTBOX_*, GATEWAY_*, LOG_*, ...) come from .env; `environment` below wins over it.
+  env_file: .env
+  environment: *app-environment
+  restart: unless-stopped
+  # PID 1 reaps zombies and forwards SIGTERM to the app, so `docker stop` triggers a graceful shutdown.
+  init: true
+  # Above uvicorn's --timeout-graceful-shutdown (25s) and the in-flight message handling of the consumer.
+  stop_grace_period: 30s
+  # Immutable root filesystem; the only writable path is an in-memory /tmp.
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging: *default-logging
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER is not set - copy .env.example to .env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set - copy .env.example to .env}"
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB is not set - copy .env.example to .env}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Loopback only: the database is for local inspection (psql, IDE), never for the network.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      # $$ defers the expansion to the shell inside the container (single source of truth: its own env).
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    stop_grace_period: 30s
+    logging: *default-logging
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    # RabbitMQ keeps its data in a directory named after the node, which is derived from the hostname.
+    # A fixed hostname keeps the named volume usable after the container is recreated.
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?RABBITMQ_DEFAULT_USER is not set - copy .env.example to .env}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is not set - copy .env.example to .env}"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      # Loopback only: AMQP and the management UI (http://127.0.0.1:15672) are for local use.
+      - "127.0.0.1:${RABBITMQ_AMQP_HOST_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_UI_HOST_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    stop_grace_period: 30s
+    logging: *default-logging
+
+  # One-shot: applies the schema, then exits 0. `restart: "no"` keeps it from being restarted in a loop;
+  # the application services wait for its successful completion.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # The image-level HEALTHCHECK probes the HTTP API; it is meaningless for non-API processes.
+    healthcheck:
+      disable: true
+
+  api:
+    <<: *app
+    # Default command of the image (uvicorn ... --factory). Its HEALTHCHECK (GET /health/live) is inherited.
+    environment:
+      <<: *app-environment
+      # DEMO ONLY. The SSRF guard rejects webhook URLs that resolve to private addresses. The demo
+      # webhook-sink lives on the docker network (a private address), so the guard must be relaxed for the
+      # stack to work out of the box. Never set this to "true" where webhook_url comes from untrusted
+      # clients on a real network; the safe default (false) lives in .env.example and in config.py.
+      WEBHOOK_ALLOW_PRIVATE_NETWORKS: "true"
+    ports:
+      # Loopback by default; set API_BIND_ADDRESS=0.0.0.0 in .env to expose the API to other machines.
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Outbox relay: moves committed outbox rows to RabbitMQ (needs the broker, unlike the API).
+  relay:
+    <<: *app
+    command: ["python", "-m", "payment_service.entrypoints.relay"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  # Message consumer: gateway emulation + webhook delivery with retry / DLQ.
+  consumer:
+    <<: *app
+    command: ["python", "-m", "payment_service.entrypoints.consumer"]
+    environment:
+      <<: *app-environment
+      # DEMO ONLY - see the comment on the api service. The consumer performs the actual webhook delivery
+      # and repeats the SSRF check at send time, so it needs the same relaxation to reach webhook-sink.
+      WEBHOOK_ALLOW_PRIVATE_NETWORKS: "true"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  # Demo receiver of webhooks (profile "demo": started only with `--profile demo`).
+  # Use  webhook_url = http://webhook-sink:9000/...  when creating payments; see its output with
+  # `docker compose logs -f webhook-sink`.
+  webhook-sink:
+    <<: *app
+    profiles: ["demo"]
+    command: ["python", "-m", "payment_service.tools.webhook_sink"]
+    # The sink needs no database or broker access, so it gets none of the shared credentials:
+    # no env_file and only the signing secret, which lets it verify X-Signature (reported as signature_valid).
+    env_file: []
+    environment:
+      SINK_SIGNING_SECRET: "${WEBHOOK_SIGNING_SECRET:?WEBHOOK_SIGNING_SECRET is not set - copy .env.example to .env}"
+    ports:
+      - "127.0.0.1:${WEBHOOK_SINK_HOST_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/received', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  rabbitmq-data:

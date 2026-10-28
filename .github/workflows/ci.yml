@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: the jobs only read the repository. Nothing is pushed or published.
+permissions:
+  contents: read
+
+# A newer push to the same branch / pull request makes the older, superseded run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with the uv image in the Dockerfile.
+  UV_VERSION: "0.12.23"
+
+jobs:
+  quality:
+    name: Lint and type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --frozen: install exactly what uv.lock says, never re-resolve in CI.
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: mypy
+        run: uv run mypy
+
+  tests:
+    name: Tests (unit and integration)
+    runs-on: ubuntu-latest # ships with Docker, which testcontainers needs for PostgreSQL and RabbitMQ
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # No marker filter: integration tests run too (real PostgreSQL + RabbitMQ in containers).
+      - name: Run tests with coverage
+        run: uv run pytest --cov --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  docker:
+    name: Docker image and compose smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      # uv runs scripts/smoke_test.py on the runner (it talks to the stack over published ports).
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # Build only (push: false); `load: true` makes the image available to the local docker daemon
+      # so that the compose stack below runs exactly the image that was just built.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: payment-service:local
+          build-args: |
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image runs as a non-root user
+        shell: bash
+        run: |
+          uid="$(docker run --rm --entrypoint id payment-service:local -u)"
+          echo "uid=${uid}"
+          test "${uid}" = "10001"
+
+      # The CI stack uses the placeholder values from .env.example; they are not secrets.
+      - name: Create .env from the example
+        run: cp .env.example .env
+
+      # --no-build: run the image built above. `up -d` itself honours depends_on, i.e. it returns only after
+      # postgres / rabbitmq are healthy and the one-shot `migrate` has exited 0 (otherwise this step fails).
+      # `--wait` is deliberately not used: whether it accepts an exited-with-0 one-shot container depends on
+      # the Compose version, so readiness of the API is polled explicitly in the next step instead.
+      - name: Start the stack (with the demo webhook sink)
+        run: docker compose --profile demo up -d --no-build
+
+      - name: Wait for the API
+        shell: bash
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health/ready > /dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8000/health/ready; echo
+
+      # End-to-end scenarios through the public interfaces only (HTTP API, webhook sink, RabbitMQ management):
+      # accepted -> processed -> signed webhook received; idempotent replay; failing webhook -> retries -> DLQ.
+      # API_KEY and the RabbitMQ credentials are read from the generated .env.
+      - name: End-to-end smoke test
+        shell: bash
+        run: |
+          set -a
+          . ./.env
+          set +a
+          uv run --frozen --no-dev python scripts/smoke_test.py
+
+      - name: Every long-running service is still up (no crash loops)
+        shell: bash
+        run: |
+          for service in postgres rabbitmq api relay consumer webhook-sink; do
+            container="$(docker compose --profile demo ps -q "${service}")"
+            running="$(docker inspect -f '{{.State.Running}}' "${container}")"
+            echo "${service}: running=${running}"
+            test "${running}" = "true"
+          done
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose --profile demo logs --no-color --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile demo down -v

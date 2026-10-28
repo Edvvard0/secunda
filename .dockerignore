@@ -1,0 +1,46 @@
+# Keep the build context small and free of anything that must not end up in an image layer.
+# Only pyproject.toml, uv.lock, README.md, alembic.ini, src/ and migrations/ are actually needed.
+
+# Version control and CI
+.git
+.gitignore
+.gitattributes
+.github
+
+# Local virtualenv and Python artefacts (the image builds its own virtualenv)
+.venv
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+build
+dist
+
+# Tool caches and reports
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.coverage
+.coverage.*
+htmlcov
+coverage.xml
+
+# Tests and documentation are not part of the runtime image
+tests
+docs
+
+# Secrets and local configuration (the example file is not needed in the image either)
+.env
+.env.*
+*.pem
+*.key
+
+# Editors / IDEs / OS
+.idea
+.vscode
+*.swp
+.DS_Store
+
+# Tooling that has nothing to do with the image content
+.pre-commit-config.yaml
+Makefile
+docker-compose*.yml
