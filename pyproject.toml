@@ -1,0 +1,167 @@
+[project]
+name = "payment-service"
+version = "0.1.0"
+description = "Asynchronous payment processing microservice: FastAPI, SQLAlchemy 2.0, RabbitMQ (FastStream), Transactional Outbox."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.1",
+    "asyncpg>=0.32.0",
+    "fastapi>=0.162.0",
+    "faststream[rabbit]>=0.7.8",
+    "httpx>=0.28.1",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.16.1",
+    "sqlalchemy[asyncio]>=2.1.6",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+payment-consumer = "payment_service.entrypoints.consumer:main"
+payment-relay = "payment_service.entrypoints.relay:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pre-commit>=4.7.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.1",
+    "pytest-cov>=7.1.0",
+    "respx>=0.23.1",
+    "ruff>=0.17.3",
+    "testcontainers[postgres,rabbitmq]>=4.15.0",
+]
+
+# --------------------------------------------------------------------------- #
+# Ruff: linter + formatter
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "D",        # pydocstyle (docstrings are part of the deliverable)
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "A",        # builtins shadowing
+    "C4",       # comprehensions
+    "DTZ",      # naive datetimes are forbidden: money + time zones do not mix
+    "T20",      # no print()
+    "SIM",      # simplify
+    "RET",      # return consistency
+    "PTH",      # pathlib
+    "PL",       # pylint
+    "RUF",      # ruff-specific
+    "S",        # bandit: security checks
+    "ASYNC",    # blocking calls inside async code
+    "TID",      # tidy imports
+    "TC",       # type-checking imports
+    "ARG",      # unused arguments
+    "PERF",     # perflint
+    "FAST",     # FastAPI-specific
+    "PT",       # pytest style
+    "LOG",      # logging misuse
+    "G",        # logging format
+    "ERA",      # commented-out code
+]
+ignore = [
+    "D105",     # docstring in magic method
+    "D107",     # docstring in __init__ (the class docstring is enough)
+    "PLR0913",  # too many arguments: DI-heavy constructors are expected here
+    "RUF001", "RUF002", "RUF003",  # Cyrillic text in strings/comments is intentional
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Header",
+    "fastapi.Security",
+    "fastapi.Path",
+    "fastapi.Query",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["payment_service"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",     # assert is the point of tests
+    "S105", "S106",  # hard-coded test secrets
+    "D",        # tests are documented by their names
+    "PLR2004",  # magic values in assertions
+    "ARG001", "ARG002",  # fixtures that are used for side effects only
+]
+"migrations/**" = ["D", "N999"]
+"src/payment_service/entrypoints/*.py" = ["T201"]
+"scripts/**" = ["T201", "PLR2004"]  # CLI tool: prints are its output, HTTP codes are self-explanatory
+
+[tool.ruff.format]
+quote-style = "double"
+
+# --------------------------------------------------------------------------- #
+# mypy: strict on the source tree
+# --------------------------------------------------------------------------- #
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+packages = ["payment_service"]
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+
+# --------------------------------------------------------------------------- #
+# pytest / coverage
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "integration: needs Docker (PostgreSQL + RabbitMQ via testcontainers)",
+]
+filterwarnings = [
+    "error",
+    # testcontainers (third-party) uses a decorator it has itself deprecated; not our code to fix.
+    "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["payment_service"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
